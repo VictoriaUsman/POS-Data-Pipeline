@@ -105,6 +105,7 @@ lambda_handlers/      # thin Lambda entrypoints (one per vendor), loop over that
 glue_jobs/bronze_to_silver.py  # Glue Python Shell job: validates bronze/, splits to silver/ + rejected/
 validation/rules.py   # single source of truth for per-vendor required fields + validate_record()
 common/s3_paths.py    # shared S3 key/partition-scheme helper used by connectors
+common/scheduling.py  # derives a fixed, retry-stable [since, until) polling window from the EventBridge event
 config/stores.example.yaml   # copy to stores.yaml (gitignored) and fill in real store/credential refs
 gcp_alerting/teams_notifier/  # Pub/Sub-triggered Cloud Function: BQ DTS failure -> Teams webhook
 bigquery/             # scheduled-query MERGE SQL: staging tables -> deduped fct_* tables
@@ -115,11 +116,13 @@ requirements.txt
 
 Each connector polls its vendor's API for orders updated since the last run and writes the payload,
 unmodified, to
-`s3://<bucket>/bronze/pos_vendor=<vendor>/store_id=<id>/year=/month=/day=/orders_<timestamp>.json`.
-No validation happens at ingestion — see [Data Validation](#data-validation) below for how bronze
-becomes silver/rejected downstream. Lambda handlers are meant to be triggered on a schedule
-(EventBridge), one rule per vendor, per the architecture diagram above. This is boilerplate — auth
-flows, pagination, and error handling are minimal and need hardening before production use.
+`s3://<bucket>/bronze/pos_vendor=<vendor>/store_id=<id>/year=/month=/day=/orders_<timestamp>.json`,
+where `<timestamp>` is the polling window's fixed end time, not wall-clock write time — see
+[Idempotency](#idempotency) below for why. No validation happens at ingestion — see [Data
+Validation](#data-validation) below for how bronze becomes silver/rejected downstream. Lambda
+handlers are meant to be triggered on a schedule (EventBridge), one rule per vendor, per the
+architecture diagram above. This is boilerplate — auth flows, pagination, and error handling are
+minimal and need hardening before production use.
 
 ### Retry & Backoff
 
@@ -132,6 +135,34 @@ All HTTP calls in `connectors/base.py` (`BasePOSConnector._request`) share one r
 
 Caveat: Lambda has a 15-minute execution timeout. A worst-case run (5 attempts × up to 60s backoff)
 could approach that limit if a vendor API is degraded — fine for boilerplate, worth monitoring once live.
+
+### Idempotency
+
+Every stage from ingestion through the curated layer overwrites/upserts on retry or rerun rather
+than duplicating:
+
+- **Ingestion (`connectors/*`, `lambda_handlers/*`)**: the polling window (`since`, `until`) comes
+  from `common/scheduling.py`'s `scheduled_window()`, anchored on the EventBridge schedule's fixed
+  `event["time"]` rather than `datetime.now()` at invocation. A Lambda-level retry or a Step
+  Functions Task retry re-invokes with the same triggering event, so it recomputes the identical
+  window instead of a shifted one. The bronze object is keyed on `until` — the window end — not
+  wall-clock write time (`BasePOSConnector.write_to_s3`), so a retry overwrites the same bronze key
+  rather than writing a duplicate under a new timestamp. Shopify and Toast bound both ends of the
+  query (`updated_at_min`/`max`, `startDate`/`endDate`) so the fetched result set is identical
+  across retries too; Clover only bounds the lower end (`modifiedTime>`) since its filter syntax
+  for compound ranges isn't reliably documented (see POS Integration Notes below) — a retry there
+  can overwrite the same key with a superset of records, which is still safe (no duplicate
+  objects, no duplicate rows downstream).
+  - Caveat: a manual/test invocation with no EventBridge `event["time"]` falls back to
+    `datetime.now()` and is **not** retry-safe — fine for local testing, not for a production
+    trigger path.
+- **Bronze → silver/rejected** (`glue_jobs/bronze_to_silver.py`): swaps the zone prefix on the
+  same key, so reprocessing a day (e.g. after a validation rule fix) overwrites deterministically
+  — see [Data Validation](#data-validation) and the [Runbook](#runbook-handling-rejected-records).
+- **Silver → BigQuery** (`bigquery/merge_fct_*.sql`): BQ DTS appends silver into a `staging_*`
+  table; a scheduled-query `MERGE` then upserts into the curated `fct_*` tables keyed on the
+  natural id (e.g. `order_id`), deduping by `updated_at` when the same record was loaded more than
+  once — so rerunning a day's DTS transfer doesn't duplicate curated rows either.
 
 ### Data Validation
 

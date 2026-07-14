@@ -13,10 +13,17 @@ class ShopifyConnector(BasePOSConnector):
         self.access_token = access_token
         self.api_version = os.environ.get("SHOPIFY_API_VERSION", "2024-10")
 
-    def fetch_orders(self, since: datetime) -> list:
+    def fetch_orders(self, since: datetime, until: datetime) -> list:
+        # Bounding both ends (updated_at_min/max) keeps a retried run's query -- and therefore
+        # its result set -- identical to the original attempt, since `since`/`until` are now a
+        # fixed window (see common/scheduling.py) rather than wall-clock time at call time.
         url = f"https://{self.shop_domain}/admin/api/{self.api_version}/orders.json"
         headers = {"X-Shopify-Access-Token": self.access_token}
-        params = {"status": "any", "updated_at_min": since.isoformat()}
+        params = {
+            "status": "any",
+            "updated_at_min": since.isoformat(),
+            "updated_at_max": until.isoformat(),
+        }
 
         orders = []
         while url:

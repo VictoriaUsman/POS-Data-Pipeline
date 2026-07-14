@@ -1,8 +1,8 @@
 import os
-from datetime import datetime, timedelta, timezone
 
 import yaml
 
+from common.scheduling import scheduled_window
 from connectors.shopify_connector import ShopifyConnector
 
 BUCKET = os.environ["RAW_BUCKET"]
@@ -16,7 +16,7 @@ def _load_stores():
 
 
 def handler(event, context):
-    since = datetime.now(timezone.utc) - timedelta(minutes=POLL_LOOKBACK_MINUTES)
+    since, until = scheduled_window(event, POLL_LOOKBACK_MINUTES)
     results = []
     for store in _load_stores():
         connector = ShopifyConnector(
@@ -25,5 +25,5 @@ def handler(event, context):
             access_token=os.environ[store["access_token_env"]],
             bucket=BUCKET,
         )
-        results.append({"store_id": store["store_id"], "s3_key": connector.run(since)})
+        results.append({"store_id": store["store_id"], "s3_key": connector.run(since, until)})
     return {"processed": results}

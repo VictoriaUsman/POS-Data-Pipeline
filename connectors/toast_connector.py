@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 
 from .base import BasePOSConnector
 
@@ -41,15 +41,16 @@ class ToastConnector(BasePOSConnector):
 
     PAGE_SIZE = 100
 
-    def fetch_orders(self, since: datetime) -> list:
+    def fetch_orders(self, since: datetime, until: datetime) -> list:
         headers = {
             "Authorization": f"Bearer {self._authenticate()}",
             "Toast-Restaurant-External-ID": self.restaurant_guid,
         }
         # Toast recommends ordersBulk with startDate/endDate over filtering by businessDate --
         # businessDate only reflects an order's creation day and misses same-day-created orders
-        # that were modified later.
-        end_date = datetime.now(timezone.utc).isoformat()
+        # that were modified later. `until` is the run's fixed window end (not datetime.now()),
+        # so a retried run queries the identical range instead of a shifted one.
+        end_date = until.isoformat()
         orders = []
         page = 1
         while True:

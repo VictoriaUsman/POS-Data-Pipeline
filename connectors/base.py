@@ -2,7 +2,7 @@ import abc
 import json
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 import boto3
 import requests
@@ -27,8 +27,8 @@ class BasePOSConnector(abc.ABC):
         self.s3 = s3_client or boto3.client("s3", config=_S3_RETRY_CONFIG)
 
     @abc.abstractmethod
-    def fetch_orders(self, since: datetime) -> list:
-        """Poll the vendor API and return raw order records updated since `since`."""
+    def fetch_orders(self, since: datetime, until: datetime) -> list:
+        """Poll the vendor API and return raw order records updated in [since, until)."""
 
     def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         """HTTP call with exponential backoff + jitter, retrying on timeouts/connection
@@ -64,17 +64,19 @@ class BasePOSConnector(abc.ABC):
         except ValueError:
             return None
 
-    def write_to_s3(self, records: list, run_date: datetime) -> str:
-        """Lands the exact vendor payload to the bronze zone, unmodified. No validation here —
-        that happens downstream in the bronze_to_silver Glue job, so bronze stays replayable
-        even if validation rules change later."""
-        key = object_key("bronze", self.vendor, self.store_id, run_date)
+    def write_to_s3(self, records: list, until: datetime) -> str:
+        """Lands the exact vendor payload to the bronze zone, unmodified. Keys on `until` -- the
+        run's fixed logical window end -- not wall-clock write time, so a retried run overwrites
+        the same bronze key instead of duplicating it. No validation here either; that happens
+        downstream in the bronze_to_silver Glue job, so bronze stays replayable even if
+        validation rules change later."""
+        key = object_key("bronze", self.vendor, self.store_id, until)
         body = "\n".join(json.dumps(r) for r in records).encode("utf-8")
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=body)
         return key
 
-    def run(self, since: datetime):
-        records = self.fetch_orders(since)
+    def run(self, since: datetime, until: datetime):
+        records = self.fetch_orders(since, until)
         if not records:
             return None
-        return self.write_to_s3(records, datetime.now(timezone.utc))
+        return self.write_to_s3(records, until)

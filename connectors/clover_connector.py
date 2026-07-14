@@ -12,7 +12,12 @@ class CloverConnector(BasePOSConnector):
         self.api_token = api_token
         self.base_url = "https://api.clover.com/v3"
 
-    def fetch_orders(self, since: datetime) -> list:
+    def fetch_orders(self, since: datetime, until: datetime) -> list:
+        # `until` isn't sent to Clover -- its REST API filter syntax for compound/ranged filters
+        # isn't reliably documented (see README POS Integration Notes), so only the lower bound
+        # is applied. Retry-stability still holds: `since` is now a fixed window boundary rather
+        # than wall-clock time, and a retry overwrites the same bronze key with a superset of
+        # records rather than creating a duplicate object.
         headers = {"Authorization": f"Bearer {self.api_token}"}
         limit = 100
         offset = 0
