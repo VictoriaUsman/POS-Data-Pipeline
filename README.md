@@ -280,6 +280,44 @@ model before it reaches BigQuery. Still to validate against real sandbox data be
 - **Toast orders can have multiple `checks`** (e.g. split checks), each with its own `payments` and `selections` — line items and payments must be flattened across all checks under one order, not just the first.
 - **Clover payments** are similarly a separate Payments API (`GET /v3/merchants/{mId}/payments`) unless fetched inline via `?expand=payments` on the order.
 
+### Curated Layer: Star Schema (BigQuery)
+
+The Normalized Order Model above is the per-vendor field mapping; this is the actual table design
+it lands in — one fact table per grain (order, line item, payment), joined to small shared
+dimensions instead of each fact table repeating store/date attributes inline.
+
+**Dimensions**
+
+| Table | Grain | Key fields |
+|---|---|---|
+| `dim_store` | one row per store | `store_id` (PK), `store_name`, `pos_vendor`, `timezone` |
+| `dim_date` | one row per calendar date | `date_key` (PK), `year`, `quarter`, `month`, `day`, `day_of_week`, `is_weekend` |
+| `dim_tender_type` | one row per normalized tender type | `tender_type` (PK: `cash`/`credit`/`gift_card`/`other`), `tender_category` |
+
+No `dim_vendor` — `pos_vendor` is a fixed 1:1 attribute of `store_id` (a store doesn't switch POS
+systems), so it's folded into `dim_store` rather than given its own table. No `dim_item` either —
+Shopify/Toast/Clover each have their own separate, non-overlapping product catalogs, so an
+item-level dimension wouldn't actually deduplicate anything across vendors; `item_name` stays a
+plain attribute on `fct_line_items` instead.
+
+**Facts**
+
+| Table | Grain | Foreign keys | Measures |
+|---|---|---|---|
+| `fct_orders` | 1 row per order | `store_id`, `date_key` | `subtotal_amount`, `discount_amount`, `tax_amount`, `total_amount`, `line_item_count`, `payment_count` |
+| `fct_line_items` | 1 row per line item | `order_id`, `store_id`, `date_key` | `quantity`, `unit_price`, `discount_amount`, `tax_amount`, `total_amount` |
+| `fct_payments` | 1 row per payment/tender | `order_id`, `store_id`, `date_key`, `tender_type` | `amount`, `tip_amount` |
+
+**BigQuery-specific implementation note:** the table above is the *logical* star schema for
+documentation/reasoning purposes. The literal physical implementation should likely **not** be
+three separate joined tables — BigQuery bills by bytes scanned per query, and classic star-schema
+joins scan and shuffle more than necessary for a warehouse this size. More idiomatic on BigQuery:
+one denormalized `fct_orders` table with `line_items` and `payments` as nested `REPEATED RECORD`
+columns (queryable via `UNNEST()`), plus the small `dim_store`/`dim_date`/`dim_tender_type` tables
+kept separate since they're tiny and genuinely reused. Either shape is valid — the star schema above
+is the shared vocabulary; nesting line items/payments inside `fct_orders` is the recommended
+physical layout given BigQuery's on-demand, bytes-scanned billing.
+
 ## Curated Warehouse Evaluation (superseded by decision below)
 
 | | Redshift Serverless | Delta/Iceberg on S3 (via Glue + Athena) |
