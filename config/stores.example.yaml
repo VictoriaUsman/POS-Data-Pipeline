@@ -1,0 +1,22 @@
+# Copy to stores.yaml and fill in real values. stores.yaml is gitignored.
+# access_token_env / client_id_env / etc. name an environment variable that
+# holds the actual secret — never put secrets directly in this file.
+
+shopify:
+  - store_id: "shopify-001"
+    shop_domain: "store1.myshopify.com"
+    access_token_env: "SHOPIFY_STORE1_TOKEN"
+  # ... 12 more Shopify stores
+
+toast:
+  - store_id: "toast-001"
+    restaurant_guid: "REPLACE_ME"
+    client_id_env: "TOAST_CLIENT_ID"
+    client_secret_env: "TOAST_CLIENT_SECRET"
+  # ... 3 more Toast stores
+
+clover:
+  - store_id: "clover-001"
+    merchant_id: "REPLACE_ME"
+    api_token_env: "CLOVER_STORE1_TOKEN"
+  # ... 2 more Clover stores
