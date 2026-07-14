@@ -1,2 +1,4 @@
-requests
-functions-framework
+# Pinned to a floor + major-version ceiling for reproducible deploys; run pip-compile (or
+# equivalent) periodically to refresh and get an exact lockfile.
+requests>=2.31,<3.0
+functions-framework>=3.5,<4.0

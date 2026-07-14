@@ -107,6 +107,8 @@ validation/rules.py   # single source of truth for per-vendor required fields + 
 common/s3_paths.py    # shared S3 key/partition-scheme helper used by connectors
 config/stores.example.yaml   # copy to stores.yaml (gitignored) and fill in real store/credential refs
 gcp_alerting/teams_notifier/  # Pub/Sub-triggered Cloud Function: BQ DTS failure -> Teams webhook
+bigquery/             # scheduled-query MERGE SQL: staging tables -> deduped fct_* tables
+infra/                # one-off setup scripts (e.g. S3 lifecycle rules) not owned by a managed service
 requirements.txt
 .env.example
 ```
@@ -158,9 +160,13 @@ rules can change/be rerun without re-polling vendor APIs.
 (Confirmed against each vendor's official Orders API docs — see [Normalized Order
 Model](#normalized-order-model-bronze--silver--curated).)
 
-This is presence/non-empty validation only — no type, range, or referential checks yet. The Glue
-crawler/transform step and the BigQuery load both read from `silver/`, never `bronze/` or
-`rejected/` directly.
+Beyond presence/non-emptiness, the monetary and epoch-timestamp fields among the required fields
+above (`NUMERIC_FIELD_CHECKS` in `validation/rules.py`: Shopify's `total_price`, Toast's
+`businessDate`, Clover's `total`/`createdTime`) are also checked for type/range — a present-but-
+malformed value (e.g. a negative amount, or a `businessDate` that isn't a valid `YYYYMMDD`) is
+rejected rather than silently reaching `silver/`. Still no referential checks, and no type/range
+checks on non-required fields. The Glue crawler/transform step and the BigQuery load both read from
+`silver/`, never `bronze/` or `rejected/` directly.
 
 ### Schema Drift Detection & Alerting
 
@@ -219,9 +225,12 @@ person to look at them. Rejected rows are never auto-fixed or auto-promoted to `
    silver/rejected keys are derived deterministically from the bronze key, so records that now pass
    validation land in `silver/` automatically — no separate backfill tooling needed.
 
-4. **Don't let `rejected/` grow forever untriaged.** Not yet built: an S3 lifecycle rule to expire
-   `rejected/` objects after a retention window (e.g. 90 days) once they've been reviewed, so old
-   rejects don't sit as silent clutter even though arrival is now alerted on immediately.
+4. **Don't let `rejected/` grow forever untriaged.** `rejected/` records carry full unmodified
+   vendor payloads (including PII on Shopify orders — email, phone, billing/shipping address), so
+   an S3 lifecycle rule expires them after a retention window once they've been reviewed —
+   `infra/configure_rejected_lifecycle.py --bucket <bucket> [--expiration-days 90]`. Run once per
+   bucket (or whenever the retention window changes); it merges into any existing lifecycle
+   configuration rather than overwriting it.
 
 ## POS Integration Notes
 
@@ -378,15 +387,28 @@ cost effectively $0 here, which was the deciding factor.
 
 **Load mechanism: DECIDED — BigQuery Data Transfer Service (Amazon S3 transfer connector).**
 Points at the S3 **silver zone** (never bronze/rejected — see [Data Validation](#data-validation)),
-runs daily, loads straight into BigQuery tables. No custom code, and
-BigQuery load jobs are free — the only cost is the same ~$1.50-2/month S3 egress already accounted
-for above. Ruled out:
+runs daily. No custom code, and BigQuery load jobs are free — the only cost is the same
+~$1.50-2/month S3 egress already accounted for above. Ruled out:
 - **BigQuery Omni** — avoids egress by querying S3 in place, but bills through BigQuery's slot/capacity
   pricing instead of on-demand, which would kill the free-tier cost advantage that justified picking
   BigQuery in the first place.
 - **Custom Cloud Function / Cloud Run job** — would replicate what BQ DTS already does natively
   (reading S3, handling auth, loading into BigQuery), for no cost savings — just extra code and a
   second cross-cloud IAM relationship to maintain.
+
+**Dedup/upsert: DECIDED — staging tables + scheduled MERGE query, not a direct DTS→fact load.**
+Each poll re-fetches "orders updated since the last run" by design, so the same order can
+legitimately land in more than one silver object across separate polls. BQ DTS itself only knows
+how to append, so pointing it straight at `fct_orders`/`fct_line_items`/`fct_payments` would produce
+duplicate fact rows for any order touched by more than one poll in a day. Instead, BQ DTS loads
+(append-only) into three staging tables — `staging_orders`, `staging_line_items`,
+`staging_payments` — mirroring the fact tables plus an `updated_at` (or `order_updated_at` for line
+items/payments, since those have no independent update timestamp of their own). A BigQuery
+**scheduled query**, set to run daily just after the DTS transfer's schedule, executes
+`bigquery/merge_fct_orders.sql`, `merge_fct_line_items.sql`, and `merge_fct_payments.sql` — each
+MERGEs the newest-by-`updated_at` version of each row into its fact table. No extra infrastructure:
+scheduled queries are a native BigQuery feature, same "no custom code" property as the DTS load
+itself.
 
 ## Alerting & Failure Notifications (Microsoft Teams)
 

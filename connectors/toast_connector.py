@@ -39,6 +39,8 @@ class ToastConnector(BasePOSConnector):
         self._token = resp.json()["token"]["accessToken"]
         return self._token
 
+    PAGE_SIZE = 100
+
     def fetch_orders(self, since: datetime) -> list:
         headers = {
             "Authorization": f"Bearer {self._authenticate()}",
@@ -47,14 +49,25 @@ class ToastConnector(BasePOSConnector):
         # Toast recommends ordersBulk with startDate/endDate over filtering by businessDate --
         # businessDate only reflects an order's creation day and misses same-day-created orders
         # that were modified later.
-        resp = self._request(
-            "GET",
-            f"{self.base_url}/orders/v2/ordersBulk",
-            headers=headers,
-            params={
-                "startDate": since.isoformat(),
-                "endDate": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-        resp.raise_for_status()
-        return resp.json()
+        end_date = datetime.now(timezone.utc).isoformat()
+        orders = []
+        page = 1
+        while True:
+            resp = self._request(
+                "GET",
+                f"{self.base_url}/orders/v2/ordersBulk",
+                headers=headers,
+                params={
+                    "startDate": since.isoformat(),
+                    "endDate": end_date,
+                    "page": page,
+                    "pageSize": self.PAGE_SIZE,
+                },
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+            orders.extend(batch)
+            if len(batch) < self.PAGE_SIZE:
+                break
+            page += 1
+        return orders

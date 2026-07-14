@@ -48,12 +48,54 @@ KNOWN_FIELDS = {
 }
 
 
+# Required fields that carry a monetary amount or an epoch-based timestamp, per vendor. These are
+# checked for type/range on top of presence -- a value that's present but the wrong shape (e.g. a
+# negative amount, or a non-numeric epoch) would otherwise sail through as "valid" and silently
+# corrupt totals once the value reaches the curated layer.
+NUMERIC_FIELD_CHECKS = {
+    "shopify": ("total_price",),  # string decimal, e.g. "19.99"
+    "toast": ("businessDate",),  # int, YYYYMMDD
+    "clover": ("total", "createdTime"),  # int cents / epoch ms
+}
+
+
+def _is_non_negative_number(value) -> bool:
+    try:
+        return float(value) >= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_valid_business_date(value) -> bool:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return False
+    if value < 10000101 or value > 99991231:
+        return False
+    month, day = (value // 100) % 100, value % 100
+    return 1 <= month <= 12 and 1 <= day <= 31
+
+
 def validate_record(record: dict, vendor: str):
     """Return None if the record is valid, else a short reason string.
-    Presence/non-empty check only -- no type, range, or referential checks yet."""
+    Checks presence/non-emptiness of required fields, plus type/range on the subset of those
+    fields that carry a monetary amount or epoch timestamp (see NUMERIC_FIELD_CHECKS). Still no
+    referential checks."""
     for field in REQUIRED_FIELDS.get(vendor, ()):
         if record.get(field) in (None, ""):
             return f"missing required field: {field}"
+
+    for field in NUMERIC_FIELD_CHECKS.get(vendor, ()):
+        value = record.get(field)
+        if value in (None, ""):
+            continue  # already covered by the required-field check above if applicable
+        if field == "businessDate":
+            if not _is_valid_business_date(value):
+                return f"invalid value for field {field}: expected YYYYMMDD, got {value!r}"
+        elif not _is_non_negative_number(value):
+            return f"invalid value for field {field}: expected a non-negative number, got {value!r}"
+
     return None
 
 
