@@ -8,6 +8,13 @@ Status: **Planning** — no infrastructure has been built yet. This document cap
 - Support next-day reporting for all stores; leave room for same-day/near-real-time visibility if needed later.
 - Keep cost low given bursty, end-of-day-heavy load patterns.
 
+## Usage Pattern
+
+- **Pipeline**: runs **daily** — ingest + merge/upsert new orders into the curated layer.
+- **Analysis**: runs **weekly**, Fridays only. No same-day/real-time requirement.
+
+This shapes the curated-warehouse decision below: idle-cost-during-the-week matters more than raw query throughput.
+
 ## Proposed Architecture
 
 ```mermaid
@@ -99,6 +106,18 @@ Lambda handlers are meant to be triggered on a schedule (EventBridge), one rule 
 architecture diagram above. This is boilerplate — auth flows, pagination, and error handling are
 minimal and need hardening before production use.
 
+### Retry & Backoff
+
+All HTTP calls in `connectors/base.py` (`BasePOSConnector._request`) share one retry strategy:
+
+- Retries on connection/timeout errors and on `429`/`500`/`502`/`503`/`504` responses.
+- Exponential backoff with full jitter (`random.uniform(0, min(60s, 1s × 2^attempt))`), up to 5 attempts.
+- Honors a vendor's `Retry-After` header when present, falling back to jittered backoff otherwise.
+- S3 writes use boto3's `adaptive` retry mode (5 max attempts) for transient throttling on upload.
+
+Caveat: Lambda has a 15-minute execution timeout. A worst-case run (5 attempts × up to 60s backoff)
+could approach that limit if a vendor API is degraded — fine for boilerplate, worth monitoring once live.
+
 ## POS Integration Notes
 
 | Vendor | Stores | Integration | Notes |
@@ -118,11 +137,32 @@ minimal and need hardening before production use.
 
 Leaning toward **Iceberg over Delta** if staying AWS-native (no Databricks), since Athena/Glue/Redshift all have first-class Iceberg support.
 
+### Curated Warehouse Charging Comparison
+
+Given the [usage pattern](#usage-pattern) — daily merge/upsert, analysis only on Fridays — how each
+platform *bills*, not just its list price, matters:
+
+| Platform | Billing unit | Idle cost (Mon–Thu) | Daily merge/upsert cost driver | Friday analysis cost driver |
+|---|---|---|---|---|
+| **Redshift Serverless** | RPU-hours (per-second, 60s min) | Auto-pauses → ~$0 | Compute *time*, not bytes touched | Compute time during query burst |
+| **BigQuery** (on-demand) | $ per TB scanned per query | $0 | **Bytes scanned** by the MERGE, including the target table if pruning is poor | Bytes scanned |
+| **Azure Synapse Serverless SQL** | $ per TB processed | $0 | Bytes scanned (same model as BigQuery) | Bytes scanned |
+| **Databricks (DBU)** | DBU-hour × cluster type, on top of VM cost | ~$0 with ephemeral Jobs clusters | Job cluster runtime | SQL Warehouse runtime (auto-suspends, cold-start lag on resume) |
+
+Note: BigQuery/Synapse Serverless bill the daily MERGE by bytes scanned, so an unpruned merge against
+a growing table gets quietly more expensive every day even though it's a small write. Redshift
+Serverless and Databricks Jobs compute bill by time, so a well-partitioned nightly merge stays cheap
+regardless of total table size.
+
+**Lean: Redshift Serverless** — already AWS-native (S3 + Glue + Lambda), near-zero cost the 4 idle
+days, scales up for the Friday burst, and daily merge cost is bounded by execution time rather than
+table size as long as data stays partitioned by `store_id`/date.
+
 ## Questions to Resolve Before Finalizing
 
 - [x] Do all 20+ stores use the same POS system, or a mix? — Mix: Shopify (13), Toast (4), Clover (3)
+- [x] Is next-day reporting sufficient everywhere, or is same-day/real-time needed? — No real-time need: pipeline runs daily (merge/upsert), analysis runs weekly on Fridays
 - [ ] Confirm Toast API/partner credentials are available for all 4 stores
-- [ ] Is next-day reporting sufficient everywhere, or is same-day/real-time needed for any use case (e.g., inventory alerts, fraud)?
 - [ ] Rough data volume per store per day (MB vs. GB)?
-- [ ] How many users/dashboards will query the curated layer daily, and how concurrently?
+- [ ] How many users/dashboards will query the curated layer on Fridays, and how concurrently?
 - [ ] Common data model to normalize Shopify/Toast/Clover orders into (line items, taxes, discounts, tenders likely differ per vendor)
