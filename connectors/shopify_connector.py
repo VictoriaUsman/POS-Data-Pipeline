@@ -1,8 +1,6 @@
 import os
 from datetime import datetime
 
-import requests
-
 from .base import BasePOSConnector
 
 
@@ -22,7 +20,7 @@ class ShopifyConnector(BasePOSConnector):
 
         orders = []
         while url:
-            resp = requests.get(url, headers=headers, params=params, timeout=30)
+            resp = self._request("GET", url, headers=headers, params=params)
             resp.raise_for_status()
             orders.extend(resp.json().get("orders", []))
             url = self._next_page_url(resp.headers.get("Link"))

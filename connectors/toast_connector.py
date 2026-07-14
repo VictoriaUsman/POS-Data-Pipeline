@@ -1,8 +1,6 @@
 import os
 from datetime import datetime
 
-import requests
-
 from .base import BasePOSConnector
 
 
@@ -28,14 +26,14 @@ class ToastConnector(BasePOSConnector):
     def _authenticate(self) -> str:
         if self._token:
             return self._token
-        resp = requests.post(
+        resp = self._request(
+            "POST",
             f"{self.base_url}/authentication/v1/authentication/login",
             json={
                 "clientId": self.client_id,
                 "clientSecret": self.client_secret,
                 "userAccessType": "TOAST_MACHINE_CLIENT",
             },
-            timeout=30,
         )
         resp.raise_for_status()
         self._token = resp.json()["token"]["accessToken"]
@@ -46,11 +44,11 @@ class ToastConnector(BasePOSConnector):
             "Authorization": f"Bearer {self._authenticate()}",
             "Toast-Restaurant-External-ID": self.restaurant_guid,
         }
-        resp = requests.get(
+        resp = self._request(
+            "GET",
             f"{self.base_url}/orders/v2/orders",
             headers=headers,
             params={"startDate": since.isoformat()},
-            timeout=30,
         )
         resp.raise_for_status()
         return resp.json()

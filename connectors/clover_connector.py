@@ -1,7 +1,5 @@
 from datetime import datetime
 
-import requests
-
 from .base import BasePOSConnector
 
 
@@ -20,7 +18,8 @@ class CloverConnector(BasePOSConnector):
         offset = 0
         orders = []
         while True:
-            resp = requests.get(
+            resp = self._request(
+                "GET",
                 f"{self.base_url}/merchants/{self.merchant_id}/orders",
                 headers=headers,
                 params={
@@ -28,7 +27,6 @@ class CloverConnector(BasePOSConnector):
                     "offset": offset,
                     "limit": limit,
                 },
-                timeout=30,
             )
             resp.raise_for_status()
             batch = resp.json().get("elements", [])
