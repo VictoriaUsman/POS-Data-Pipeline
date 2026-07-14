@@ -1,12 +1,11 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .base import BasePOSConnector
 
 
 class ToastConnector(BasePOSConnector):
     vendor = "toast"
-    required_fields = ("guid", "businessDate")  # verify against Toast Orders API docs
 
     def __init__(
         self,
@@ -45,11 +44,17 @@ class ToastConnector(BasePOSConnector):
             "Authorization": f"Bearer {self._authenticate()}",
             "Toast-Restaurant-External-ID": self.restaurant_guid,
         }
+        # Toast recommends ordersBulk with startDate/endDate over filtering by businessDate --
+        # businessDate only reflects an order's creation day and misses same-day-created orders
+        # that were modified later.
         resp = self._request(
             "GET",
-            f"{self.base_url}/orders/v2/orders",
+            f"{self.base_url}/orders/v2/ordersBulk",
             headers=headers,
-            params={"startDate": since.isoformat()},
+            params={
+                "startDate": since.isoformat(),
+                "endDate": datetime.now(timezone.utc).isoformat(),
+            },
         )
         resp.raise_for_status()
         return resp.json()

@@ -25,5 +25,5 @@ def handler(event, context):
             access_token=os.environ[store["access_token_env"]],
             bucket=BUCKET,
         )
-        results.append({"store_id": store["store_id"], **(connector.run(since) or {})})
+        results.append({"store_id": store["store_id"], "s3_key": connector.run(since)})
     return {"processed": results}
