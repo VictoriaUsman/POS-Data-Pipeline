@@ -6,6 +6,7 @@ from .base import BasePOSConnector
 
 class ShopifyConnector(BasePOSConnector):
     vendor = "shopify"
+    required_fields = ("id", "created_at", "total_price")  # verify against Shopify Orders API docs
 
     def __init__(self, store_id: str, shop_domain: str, access_token: str, bucket: str, **kwargs):
         super().__init__(store_id, bucket, **kwargs)

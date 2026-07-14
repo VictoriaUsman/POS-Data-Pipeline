@@ -6,6 +6,7 @@ from .base import BasePOSConnector
 
 class ToastConnector(BasePOSConnector):
     vendor = "toast"
+    required_fields = ("guid", "businessDate")  # verify against Toast Orders API docs
 
     def __init__(
         self,

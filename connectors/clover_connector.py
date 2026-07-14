@@ -5,6 +5,7 @@ from .base import BasePOSConnector
 
 class CloverConnector(BasePOSConnector):
     vendor = "clover"
+    required_fields = ("id", "createdTime")  # verify against Clover Orders API docs
 
     def __init__(self, store_id: str, merchant_id: str, api_token: str, bucket: str, **kwargs):
         super().__init__(store_id, bucket, **kwargs)
